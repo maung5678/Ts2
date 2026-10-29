@@ -30,6 +30,8 @@ ap.add_argument("--scale", type=int, default=100, help="เปอร์เซ็
 ap.add_argument("--out", default=os.path.join(HERE, "out"))
 ap.add_argument("--start", type=int, default=1)
 ap.add_argument("--end", type=int, default=N_FRAMES)
+ap.add_argument("--preset", choices=["quality", "fast", "eevee"], default="quality",
+                help="fast = Cycles ลดแสงสะท้อน/ไม่มี motion blur, eevee = เอนจินเรียลไทม์")
 args = ap.parse_args(sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else sys.argv[1:])
 
 rng = np.random.default_rng(7)
@@ -710,6 +712,17 @@ animate()
 print(f"animation baked in {time.time() - t0:.1f}s", flush=True)
 
 os.makedirs(f"{args.out}/frames", exist_ok=True)
+if args.preset == "fast":
+    cy.max_bounces = 3; cy.diffuse_bounces = 1; cy.glossy_bounces = 1; cy.transmission_bounces = 2
+    cy.adaptive_threshold = 0.1; cy.light_sampling_threshold = 0.05
+    cy.denoising_prefilter = "FAST"; cy.denoising_quality = "FAST"
+    r.use_motion_blur = False; cam_data.dof.use_dof = False
+    r.use_simplify = True; r.simplify_subdivision_render = 0; cy.texture_limit_render = "1024"
+elif args.preset == "eevee":
+    r.engine = "BLENDER_EEVEE"
+    scene.eevee.taa_render_samples = args.samples
+    r.use_motion_blur = False
+
 frames = [args.still] if args.still else range(args.start, args.end + 1)
 for f in frames:
     t0 = time.time()
