@@ -18,7 +18,7 @@ from mathutils import Matrix, Vector
 HERE = os.path.dirname(os.path.abspath(__file__))
 ASSETS = os.path.join(HERE, "..", "assets")
 FPS = int(os.environ.get("CLIP_FPS", 30))
-DURATION = 5.0
+DURATION = float(os.environ.get("CLIP_DURATION", 7.0))
 N_FRAMES = int(FPS * DURATION)
 CUT = 2.3                      # วินาทีที่ตัดจากช็อตใกล้ไปมุมกว้าง
 DROP_T = 0.55                  # ปล่อยลูกหิน
@@ -302,7 +302,7 @@ M_CRATE = pbr("crate", "fine_grained_wood", scale=1.0, tint=(0.88, 0.7, 0.64), t
 def slat_crate(cx, cy, rz, s=0.8, h=0.78):
     """ลังไม้ระแนงสีชมพูอ่อนแบบในคลิป"""
     root = bpy.data.objects.new("crate", None); col.objects.link(root)
-    parts = [box("top", (s, s, 0.04), (0, 0, h - 0.02), M_CRATE, 0.006)]
+    parts = []  # ลังเปิดด้านบน ใช้เป็น "ห่วง" ตอนจบ
     for sx in (-1, 1):
         for sy in (-1, 1):
             parts.append(box("post", (0.07, 0.07, h - 0.04), (sx * (s / 2 - 0.035), sy * (s / 2 - 0.035), (h - 0.04) / 2), M_CRATE))
@@ -531,6 +531,28 @@ def ball_height(t):
     return BALL_R + (0.8 - BALL_R) * (1 - (1 - u) ** 2), ph
 
 
+DRIB_END = CUT + 5 / DRIBBLE_HZ       # จบการเลี้ยงตอนลูกอยู่บนสุดพอดี
+GATHER_END = DRIB_END + 0.4           # รวบลูกเข้าอก
+LAND_T = GATHER_END + 0.75            # ลูกตกลงลัง
+CRATE_IN = Vector((-0.1, -0.3, 0.22))
+
+
+def ball_state(t):
+    """ตำแหน่งลูกบาสช่วงช็อตกว้าง: เลี้ยง → รวบ → ชู้ตลงลัง"""
+    if t < DRIB_END:
+        h, ph = ball_height(t)
+        return blue.P(0.33, 0.45, h), 1 - 0.16 * max(0.0, 1 - abs(ph - 0.5) / 0.035)
+    chest = blue.P(0.02, 0.36, 1.12)
+    if t < GATHER_END:
+        return blue.P(0.33, 0.45, 0.8).lerp(chest, smooth((t - DRIB_END) / 0.4)), 1.0
+    if t < LAND_T:
+        u = (t - GATHER_END) / (LAND_T - GATHER_END)
+        pos = chest.lerp(CRATE_IN, u)
+        pos.z += 4 * 0.75 * u * (1 - u)
+        return pos, 1.0
+    return CRATE_IN.copy(), 1.0
+
+
 def pose_blue(t):
     p = blue
     p.reset()
@@ -560,13 +582,23 @@ def pose_blue(t):
         p.rot_local("Bip01 Spine1", (0, 0, 1), 0.12)
         p.rot_local("Bip01 Neck", (1, 0, 0), -0.25)
         p.rot_local("Bip01 Head", (1, 0, 0), -0.3)
-        ball_pos = p.P(0.33, 0.45, h)
-        hand = ball_pos + Vector((0, 0, BALL_R + 0.03))
-        hand.z = max(hand.z, 0.68 + 0.05 * math.cos(ph * 2 * math.pi))
-        p.arm_to("R", hand, p.C(1, -0.5, -0.4), p.C(0.05, 0.7, -0.7))
-        p.fingers("R", 0.25)
-        p.arm_to("L", p.P(-0.38, 0.32, 0.95), p.C(-1, -0.3, -0.5), p.C(-0.3, 1, -0.2))
-        p.fingers("L", 0.35)
+        if t < DRIB_END:
+            ball_pos = p.P(0.33, 0.45, h)
+            hand = ball_pos + Vector((0, 0, BALL_R + 0.03))
+            hand.z = max(hand.z, 0.68 + 0.05 * math.cos(ph * 2 * math.pi))
+            p.arm_to("R", hand, p.C(1, -0.5, -0.4), p.C(0.05, 0.7, -0.7))
+            p.fingers("R", 0.25)
+            p.arm_to("L", p.P(-0.38, 0.32, 0.95), p.C(-1, -0.3, -0.5), p.C(-0.3, 1, -0.2))
+            p.fingers("L", 0.35)
+        else:
+            # รวบลูกสองมือแล้วชู้ตลงลัง มือยืดตามหลังปล่อย
+            bp, _ = ball_state(min(t, GATHER_END))
+            aim = (CRATE_IN + Vector((0, 0, 0.9)) - bp).normalized()
+            push = smooth((t - GATHER_END) / 0.25)
+            for side, sd in (("L", -1), ("R", 1)):
+                hand = bp + p.C(sd * (BALL_R + 0.03), -0.02, 0) + aim * 0.35 * push
+                p.arm_to(side, hand, p.C(sd, -0.4, -0.6), p.C(sd * 0.2, 0.6, 0.3).lerp(aim, push))
+                p.fingers(side, 0.3 - 0.2 * push)
 
 
 def pose_white(t):
@@ -633,11 +665,9 @@ def animate():
         if t < CUT:
             ball.location = (0, 0, -1)
         else:
-            h, ph = ball_height(t)
-            ball.location = blue.P(0.33, 0.45, h)
-            sq = 1 - 0.16 * max(0.0, 1 - abs(ph - 0.5) / 0.035)
+            ball.location, sq = ball_state(t)
             ball.scale = (1 / math.sqrt(sq), 1 / math.sqrt(sq), sq)
-            ball.rotation_euler = (-t * 14, 0.3, 0.2)
+            ball.rotation_euler = (-min(t, LAND_T) * 14, 0.3, 0.2)
         for prop in ("location", "scale", "rotation_euler"):
             ball.keyframe_insert(prop, frame=f)
         camera_at(t); cam.keyframe_insert("location", frame=f); cam.keyframe_insert("rotation_euler", frame=f)
