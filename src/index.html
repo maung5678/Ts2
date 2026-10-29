@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="th">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Odd Tilt Court</title>
+<style>
+  html, body { margin: 0; height: 100%; background: #000; overflow: hidden; }
+  #stage { position: relative; width: 720px; height: 1280px; margin: 0 auto; }
+  #stage canvas { display: block; }
+  #caption {
+    position: absolute; left: 0; right: 0; top: 54%;
+    text-align: center; pointer-events: none;
+    font-family: "Inter Display", "Inter", "DejaVu Sans", sans-serif;
+    font-weight: 900; font-size: 64px; letter-spacing: -1px; color: #fff;
+    -webkit-text-stroke: 9px #111; paint-order: stroke fill;
+    text-shadow: 0 4px 8px rgba(0,0,0,.35);
+  }
+  #caption span { display: inline-block; transform-origin: 50% 60%; }
+</style>
+<script type="importmap">
+  { "imports": { "three": "../node_modules/three/build/three.module.js" } }
+</script>
+</head>
+<body>
+<div id="stage"><div id="caption"><span></span></div></div>
+<script type="module" src="./scene.js"></script>
+</body>
+</html>
