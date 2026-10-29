@@ -17,7 +17,8 @@ from mathutils import Matrix, Vector
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ASSETS = os.path.join(HERE, "..", "assets")
-FPS, DURATION = 30, 5.0
+FPS = int(os.environ.get("CLIP_FPS", 30))
+DURATION = 5.0
 N_FRAMES = int(FPS * DURATION)
 CUT = 2.3                      # วินาทีที่ตัดจากช็อตใกล้ไปมุมกว้าง
 DROP_T = 0.55                  # ปล่อยลูกหิน
