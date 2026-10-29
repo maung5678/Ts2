@@ -14,17 +14,27 @@ from PIL import Image, ImageDraw, ImageFont
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUT_DIR = f"{HERE}/out"
 FRAMES = sorted(glob.glob(f"{OUT_DIR}/frames/*.png"))
-OUT = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else f"{HERE}/../output/clip_viral.mp4")
+OUT = os.path.abspath(sys.argv[1] if len(sys.argv) > 1 else f"{HERE}/../output/clip_viral_15s.mp4")
 FPS = int(os.environ.get("CLIP_FPS", 24))
 FONT = "/usr/share/fonts/opentype/inter/InterDisplay-Black.otf"
 SR_MODEL = f"{HERE}/../assets/sr/FSRCNN_x2.pb"
-# (เริ่ม, จบ, ข้อความ, สีเน้น) — คำต่อคำแบบคลิปไวรัล
-CAPTIONS = [
-    (0.0, 0.55, "Stone", None), (0.55, 1.2, "balls", None), (1.2, 1.7, "DON'T", (255, 80, 60)),
-    (1.7, 2.3, "bounce...", None), (2.35, 2.9, "So he", None), (2.9, 3.6, "added AIR", (120, 220, 255)),
-    (3.6, 4.55, "Clever!", (255, 214, 60)), (4.6, 5.2, "Then...", None), (5.2, 5.9, "SHOOT", None),
-    (5.9, 7.0, "BASKET-ball!", (255, 140, 40)),
-]
+sys.path.insert(0, HERE)
+import json  # noqa: E402
+from timeline import CUT, DRIB_END, DRIB_START, DRIBBLE_HZ, IMPACT_T, LAND_T, PUMP_END, PUMP_HZ, PUMP_START, SHOOT_T  # noqa: E402
+
+# ซับคำต่อคำจากเวลาเสียงพากย์ (รวมคำสั้น ๆ ให้แต่ละชิ้นค้างอย่างน้อย 0.3 วิ)
+HIGHLIGHT = {"stone": (200, 200, 200), "don't": (255, 80, 60), "air.": (120, 220, 255), "boing!": (255, 214, 60),
+             "clever!": (255, 214, 60), "basket,": (255, 140, 40), "basketball": (255, 140, 40), "throw": (255, 214, 60)}
+CAPTIONS = []
+for line in json.load(open(f"{OUT_DIR}/vo.json")):
+    chunk = []
+    for w in line["words"]:
+        chunk.append(w)
+        if chunk[-1]["e"] - chunk[0]["s"] >= 0.3 or w is line["words"][-1]:
+            text = " ".join(c["w"] for c in chunk)
+            color = next((HIGHLIGHT[c["w"].lower()] for c in chunk if c["w"].lower() in HIGHLIGHT), None)
+            CAPTIONS.append((chunk[0]["s"], chunk[-1]["e"], text, color))
+            chunk = []
 
 # ---------- 1) อัปสเกล + ซับ ----------
 sr = cv2.dnn_superres.DnnSuperResImpl_create()
@@ -36,7 +46,7 @@ for i, path in enumerate(FRAMES):
     if up.shape[1] != 1080:
         up = cv2.resize(up, (1080, 1920), interpolation=cv2.INTER_LANCZOS4)
     im = Image.fromarray(cv2.cvtColor(up, cv2.COLOR_BGR2RGB))
-    cap = next((c for c in CAPTIONS if c[0] <= t < c[1]), None)
+    cap = next((c for c in reversed(CAPTIONS) if c[0] <= t < c[1] + 0.2), None)
     if cap:
         pop = min(1.0, (t - cap[0]) / 0.1)
         scale = 0.7 + 0.3 * pop + (0.1 if 0.4 < pop < 1 else 0)
@@ -96,27 +106,34 @@ def pop():
     return np.sin(2 * np.pi * (900 - 4000 * t) * t) * env(n, d=0.03)
 
 
-# ดนตรีพื้นหลัง: บีทเบา ๆ 100 BPM + เบสไลน์
+# ดนตรีพื้นหลัง: บีทเบา ๆ 100 BPM + เบสไลน์ (ดังต่อเนื่อง ไม่มีช่วงเงียบ)
 beat = 60 / 100
 for k in range(int(dur / beat) + 1):
-    add(k * beat, thud(55, 0.18, 0.1), 0.35)
-    add(k * beat + beat / 2, rng.normal(0, 1, int(SR_A * 0.05)) * env(int(SR_A * 0.05), d=0.01), 0.08)
+    add(k * beat, thud(55, 0.18, 0.1), 0.3)
+    add(k * beat + beat / 2, rng.normal(0, 1, int(SR_A * 0.05)) * env(int(SR_A * 0.05), d=0.01), 0.07)
     note = [55, 55, 65.4, 49][k % 4]
     n = int(SR_A * beat); tt = np.arange(n) / SR_A
-    add(k * beat, np.sin(2 * np.pi * note * tt) * env(n, 0.01, 0.4), 0.18)
+    add(k * beat, np.sin(2 * np.pi * note * tt) * env(n, 0.01, 0.4), 0.16)
 
-DROP_T, G, STONE_R = 0.55, 9.81, 0.17
-impact = DROP_T + np.sqrt(2 * (1.0 - STONE_R) / G)
-add(impact, thud(45, 0.5, 1.0), 1.0)                      # ลูกหินกระแทก
-for c in CAPTIONS:
-    add(c[0], pop(), 0.15)                                  # เสียง "ป๊อป" ตอนซับขึ้น
-add(2.3, whoosh(0.35, True), 0.4)                           # ตัดช็อต
-CUT, HZ = 2.3, 2.2
-for n in range(5):
-    add(CUT + (n + 0.5) / HZ, bounce(), 0.9)               # ลูกบาสกระทบพื้น
-drib_end = CUT + 5 / HZ
-add(drib_end + 0.4, whoosh(0.7, False), 0.35)               # ชู้ต
-add(drib_end + 0.4 + 0.75, thud(110, 0.25, 0.5), 0.8)       # ลงลัง
+add(IMPACT_T, thud(45, 0.5, 1.0), 1.4)                      # ลูกหินกระแทก
+add(CUT, whoosh(0.35, True), 0.5)                            # ตัดช็อต
+t = PUMP_START
+while t < PUMP_END:                                          # เสียงสูบลม "ฟู่"
+    add(t + 0.5 / PUMP_HZ - 0.15, whoosh(0.25, False), 0.35)
+    t += 1 / PUMP_HZ
+for n in range(int((DRIB_END - DRIB_START) * DRIBBLE_HZ)):
+    add(DRIB_START + (n + 0.5) / DRIBBLE_HZ, bounce(), 1.1)  # ลูกบาสกระทบพื้น
+add(SHOOT_T, whoosh(0.7, False), 0.45)                       # ชู้ต
+add(LAND_T, thud(110, 0.25, 0.5), 1.0)                       # ลงลัง
+music = audio.copy()
+
+# เสียงพากย์ (resample 22.05k → 44.1k) และลดเสียงดนตรีลงตอนมีคนพูด
+with wave.open(f"{OUT_DIR}/vo.wav") as w:
+    vo = np.frombuffer(w.readframes(w.getnframes()), np.int16).astype(np.float32) / 32768
+    vo = np.interp(np.arange(int(len(vo) * SR_A / w.getframerate())) * w.getframerate() / SR_A, np.arange(len(vo)), vo)
+voice = np.zeros_like(audio); voice[: len(vo)] = vo[: len(audio)]
+music /= max(1e-6, np.abs(music).max())
+audio = voice * 1.0 + music * 0.28
 audio /= max(1e-6, np.abs(audio).max()) / 0.9
 with wave.open(f"{OUT_DIR}/audio.wav", "wb") as w:
     w.setnchannels(1); w.setsampwidth(2); w.setframerate(SR_A)

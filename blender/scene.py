@@ -17,12 +17,11 @@ from mathutils import Matrix, Vector
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 ASSETS = os.path.join(HERE, "..", "assets")
-FPS = int(os.environ.get("CLIP_FPS", 30))
-DURATION = float(os.environ.get("CLIP_DURATION", 7.0))
+sys.path.insert(0, HERE)
+from timeline import *  # noqa: E402,F401,F403  เวลาของเหตุการณ์ทั้งหมด
+
+FPS = int(os.environ.get("CLIP_FPS", 24))
 N_FRAMES = int(FPS * DURATION)
-CUT = 2.3                      # วินาทีที่ตัดจากช็อตใกล้ไปมุมกว้าง
-DROP_T = 0.55                  # ปล่อยลูกหิน
-G = 9.81
 
 ap = argparse.ArgumentParser()
 ap.add_argument("--still", type=int, default=None)
@@ -329,7 +328,6 @@ def rock_sphere(name, r, loc, detail=5, amount=0.06, mat=None):
     return finish(o, mat or M_STONE, smooth_shade=detail > 2)
 
 
-STONE_R = 0.17
 stone = rock_sphere("stone_ball", STONE_R, (0, 0, 1))
 rock_sphere("stone_ball_side", STONE_R, (-1.75, -0.75, STONE_R - 0.02))
 
@@ -521,36 +519,46 @@ def key_pose(person, frame):
 # ======================================================================
 # Timeline
 # ======================================================================
-IMPACT_T = DROP_T + math.sqrt(2 * (1.0 - STONE_R) / G)
-DRIBBLE_HZ = 2.2
 
 
 def ball_height(t):
-    ph = ((t - CUT) * DRIBBLE_HZ) % 1.0          # 0 = บนสุด, 0.5 = กระทบพื้น
+    ph = ((t - DRIB_START) * DRIBBLE_HZ) % 1.0   # 0 = บนสุด, 0.5 = กระทบพื้น
     u = abs(ph - 0.5) * 2
     return BALL_R + (0.8 - BALL_R) * (1 - (1 - u) ** 2), ph
 
 
-DRIB_END = CUT + 5 / DRIBBLE_HZ       # จบการเลี้ยงตอนลูกอยู่บนสุดพอดี
-GATHER_END = DRIB_END + 0.4           # รวบลูกเข้าอก
-LAND_T = GATHER_END + 0.75            # ลูกตกลงลัง
 CRATE_IN = Vector((-0.1, -0.3, 0.22))
 
 
+def chest():
+    return blue.P(0.02, 0.36, 1.08)
+
+
 def ball_state(t):
-    """ตำแหน่งลูกบาสช่วงช็อตกว้าง: เลี้ยง → รวบ → ชู้ตลงลัง"""
+    """(ตำแหน่ง, squash, ขนาด) ของลูกบาส: ถือขณะสูบลม → เลี้ยง → รวบ → ชู้ตลงลัง"""
+    top = blue.P(0.33, 0.45, 0.8)
+    size = 0.72 + 0.28 * smooth((t - PUMP_START) / (PUMP_END - PUMP_START))
+    if t < DRIB_START:
+        return chest().lerp(top, smooth((t - PUMP_END) / (DRIB_START - PUMP_END))), 1.0, size
     if t < DRIB_END:
         h, ph = ball_height(t)
-        return blue.P(0.33, 0.45, h), 1 - 0.16 * max(0.0, 1 - abs(ph - 0.5) / 0.035)
-    chest = blue.P(0.02, 0.36, 1.12)
-    if t < GATHER_END:
-        return blue.P(0.33, 0.45, 0.8).lerp(chest, smooth((t - DRIB_END) / 0.4)), 1.0
+        return blue.P(0.33, 0.45, h), 1 - 0.16 * max(0.0, 1 - abs(ph - 0.5) / 0.035), 1.0
+    if t < SHOOT_T:
+        return top.lerp(chest(), smooth((t - DRIB_END) / (GATHER_END - DRIB_END))), 1.0, 1.0
     if t < LAND_T:
-        u = (t - GATHER_END) / (LAND_T - GATHER_END)
-        pos = chest.lerp(CRATE_IN, u)
+        u = (t - SHOOT_T) / (LAND_T - SHOOT_T)
+        pos = chest().lerp(CRATE_IN, u)
         pos.z += 4 * 0.75 * u * (1 - u)
-        return pos, 1.0
-    return CRATE_IN.copy(), 1.0
+        return pos, 1.0, 1.0
+    return CRATE_IN.copy(), 1.0, 1.0
+
+
+def hold_ball(p, bp, push=0.0, aim=None):
+    for side, sd in (("L", -1), ("R", 1)):
+        hand = bp + p.C(sd * (BALL_R + 0.03), -0.02, 0) + (aim * 0.35 * push if aim is not None else Vector())
+        d = p.C(sd * 0.2, 0.6, 0.3)
+        p.arm_to(side, hand, p.C(sd, -0.4, -0.6), d.lerp(aim, push) if aim is not None else d)
+        p.fingers(side, 0.3 - 0.2 * push)
 
 
 def pose_blue(t):
@@ -564,59 +572,84 @@ def pose_blue(t):
         p.rot_local("Bip01 Spine1", (1, 0, 0), -(0.12 + 0.1 * k))
         p.rot_local("Bip01 Spine2", (1, 0, 0), -(0.1 + 0.08 * k))
         look = smooth((t - DROP_T) / 0.35)
-        p.rot_local("Bip01 Neck", (1, 0, 0), -(0.15 + 0.25 * look))
-        p.rot_local("Bip01 Head", (1, 0, 0), -(0.1 + 0.25 * look))
+        up = smooth((t - 2.6) / 0.5)                     # เงยหน้ามองกล้องแบบงง ๆ
+        p.rot_local("Bip01 Neck", (1, 0, 0), -(0.15 + 0.25 * look) * (1 - 0.7 * up))
+        p.rot_local("Bip01 Head", (1, 0, 0), -(0.1 + 0.25 * look) * (1 - 0.8 * up))
+        p.rot_local("Bip01 Head", (0, 0, 1), 0.12 * math.sin(max(0.0, t - 2.9) * 5) * up)
         for side, s in (("L", -1), ("R", 1)):
             hold = p.P(s * 0.19 - 0.05, 0.42, 0.98)
-            open_ = p.P(s * (0.29 + 0.04 * sur), 0.16, 0.9 + 0.04 * sur)
+            open_ = p.P(s * (0.29 + 0.04 * sur), 0.16, 0.9 + 0.04 * sur + 0.08 * up)
             tgt = hold.lerp(open_, k)
-            p.arm_to(side, tgt, p.C(s * 1, -0.6, -0.6), p.C(s * lerp(-0.6, 0.3, k), 0.6, -0.4))
+            p.arm_to(side, tgt, p.C(s * 1, -0.6, -0.6), p.C(s * lerp(-0.6, 0.3, k), 0.6, -0.4 + 0.5 * up))
             p.fingers(side, lerp(0.5, 0.15, k))
-    else:
-        h, ph = ball_height(t)
-        bob = 0.015 * math.cos(ph * 2 * math.pi)
-        p.pelvis_to(0, -0.1, 0.78 + bob)
-        p.legs(stance=0.24, knee_out=0.35, toe_out=0.35, front=(0.12, -0.1))
-        p.rot_local("Bip01 Spine1", (1, 0, 0), -0.3)
-        p.rot_local("Bip01 Spine2", (1, 0, 0), -0.15)
-        p.rot_local("Bip01 Spine1", (0, 0, 1), 0.12)
-        p.rot_local("Bip01 Neck", (1, 0, 0), -0.25)
-        p.rot_local("Bip01 Head", (1, 0, 0), -0.3)
-        if t < DRIB_END:
-            ball_pos = p.P(0.33, 0.45, h)
-            hand = ball_pos + Vector((0, 0, BALL_R + 0.03))
-            hand.z = max(hand.z, 0.68 + 0.05 * math.cos(ph * 2 * math.pi))
-            p.arm_to("R", hand, p.C(1, -0.5, -0.4), p.C(0.05, 0.7, -0.7))
-            p.fingers("R", 0.25)
-            p.arm_to("L", p.P(-0.38, 0.32, 0.95), p.C(-1, -0.3, -0.5), p.C(-0.3, 1, -0.2))
-            p.fingers("L", 0.35)
-        else:
-            # รวบลูกสองมือแล้วชู้ตลงลัง มือยืดตามหลังปล่อย
-            bp, _ = ball_state(min(t, GATHER_END))
-            aim = (CRATE_IN + Vector((0, 0, 0.9)) - bp).normalized()
-            push = smooth((t - GATHER_END) / 0.25)
-            for side, sd in (("L", -1), ("R", 1)):
-                hand = bp + p.C(sd * (BALL_R + 0.03), -0.02, 0) + aim * 0.35 * push
-                p.arm_to(side, hand, p.C(sd, -0.4, -0.6), p.C(sd * 0.2, 0.6, 0.3).lerp(aim, push))
-                p.fingers(side, 0.3 - 0.2 * push)
+        return
+    dribbling = DRIB_START <= t < DRIB_END
+    h, ph = ball_height(t)
+    bob = 0.015 * math.cos(ph * 2 * math.pi) if dribbling else 0.008 * math.sin(t * 3)
+    crouch = smooth((t - PUMP_END) / 0.3) * (1 - smooth((t - DRIB_END) / 0.4))
+    p.pelvis_to(0, -0.1 * crouch, lerp(0.86, 0.78, crouch) + bob)
+    p.legs(stance=lerp(0.18, 0.24, crouch), knee_out=0.35, toe_out=0.35, front=(lerp(0.04, 0.12, crouch), -0.1))
+    p.rot_local("Bip01 Spine1", (1, 0, 0), -lerp(0.08, 0.3, crouch))
+    p.rot_local("Bip01 Spine2", (1, 0, 0), -lerp(0.05, 0.15, crouch))
+    p.rot_local("Bip01 Spine1", (0, 0, 1), 0.12 * crouch)
+    p.rot_local("Bip01 Neck", (1, 0, 0), -lerp(0.1, 0.25, crouch))
+    p.rot_local("Bip01 Head", (1, 0, 0), -lerp(0.15, 0.3, crouch))
+    if t < PUMP_END:  # มองเพื่อนที่กำลังสูบลม
+        p.rot_local("Bip01 Head", (0, 0, 1), -0.45)
+    if GATHER_END <= t < SHOOT_T:  # หันซ้ายขวาหาที่โยน
+        p.rot_local("Bip01 Head", (0, 0, 1), 0.55 * math.sin((t - GATHER_END) * 2 * math.pi * 0.55))
+    if t >= CELEB_T:  # ชูสองมือฉลอง
+        k = smooth((t - CELEB_T) / 0.35)
+        for side, sd in (("L", -1), ("R", 1)):
+            p.arm_to(side, p.P(sd * 0.32, 0.05, 1.45).lerp(p.P(sd * 0.38, 0.08, 2.05 + 0.04 * math.sin(t * 9)), k),
+                     p.C(sd, -0.2, -0.3), p.C(sd * 0.2, 0.1, 1))
+            p.fingers(side, 0.7 * k)
+        return
+    if dribbling:
+        hand = p.P(0.33, 0.45, h) + Vector((0, 0, BALL_R + 0.03))
+        hand.z = max(hand.z, 0.68 + 0.05 * math.cos(ph * 2 * math.pi))
+        p.arm_to("R", hand, p.C(1, -0.5, -0.4), p.C(0.05, 0.7, -0.7))
+        p.fingers("R", 0.25)
+        p.arm_to("L", p.P(-0.38, 0.32, 0.95), p.C(-1, -0.3, -0.5), p.C(-0.3, 1, -0.2))
+        p.fingers("L", 0.35)
+        return
+    bp = ball_state(min(t, SHOOT_T - 1e-3))[0]
+    aim = (CRATE_IN + Vector((0, 0, 0.9)) - bp).normalized()
+    push = smooth((t - SHOOT_T) / 0.25) * (1 - smooth((t - LAND_T - 0.3) / 0.5))
+    hold_ball(p, bp, push, aim)
 
 
 def pose_white(t):
     p = white
     p.reset()
-    p.pelvis_to(0, 0, 0.885)
+    pumping = PUMP_START <= t < PUMP_END
+    stroke = 0.5 - 0.5 * math.cos((t - PUMP_START) * 2 * math.pi * PUMP_HZ) if pumping else 0.0
+    p.pelvis_to(0, 0, 0.885 - 0.05 * stroke)
     p.legs(stance=0.13, knee_out=0.15, toe_out=0.2, front=(0.05, -0.04))
+    p.rot_local("Bip01 Spine1", (1, 0, 0), -0.12 * stroke)
     p.rot_local("Bip01 Spine1", (0, 0, 1), 0.04 * math.sin(t * 2))
     p.rot_local("Bip01 Head", (0, 0, 1), 0.15)
-    # มือขวาวางบนด้ามที่สูบลม
-    p.arm_to("R", p.P(0.33, 0.16, 1.12), p.C(1, -1, -0.6), p.C(0.1, 0.4, -1))
+    # มือขวาบนด้ามที่สูบลม (กดขึ้นลงตอนสูบ)
+    p.arm_to("R", p.P(0.33, 0.16, 1.12 - 0.2 * stroke), p.C(1, -1, -0.6), p.C(0.1, 0.4, -1))
     p.fingers("R", 0.6)
-    k = smooth((t - CUT - 0.2) / 0.45) if t > CUT else 0.0
-    rest = p.P(-0.24, 0.05, 0.85)
     shoulder = p.head("Bip01 L UpperArm")
+    rest = p.P(-0.24, 0.05, 0.85)
+    if pumping:  # มือซ้ายจับตัวสูบช่วยพยุง
+        p.arm_to("L", p.P(0.2, 0.22, 1.0 - 0.2 * stroke), p.C(-1, -0.5, -0.6), p.C(0.3, 0.4, -1))
+        p.fingers("L", 0.6)
+        return
+    if t >= CELEB_T:  # ชูกำปั้น
+        k = smooth((t - CELEB_T - 0.1) / 0.35)
+        p.arm_to("L", rest.lerp(p.P(-0.3, 0.1, 2.0 + 0.03 * math.sin(t * 8)), k), p.C(-1, -0.2, -0.3), p.C(-0.1, 0.1, 1))
+        p.fingers("L", 0.9 * k)
+        return
+    # ชี้ไปที่ลูก แล้วเปลี่ยนไปชี้ลังตอน "where to throw?"
+    k = smooth((t - DRIB_START) / 0.45) if t > DRIB_START else 0.0
     to_ball = (blue.P(0.33, 0.45, 0.6) - shoulder).normalized()
-    point = shoulder + to_ball * 0.56 + Vector((0, 0, 0.06 + 0.015 * math.sin(t * 10)))
-    p.arm_to("L", rest.lerp(point, k), p.C(-1, -0.5, -0.6), p.C(-0.2, 0.2, -1).lerp(to_ball, k))
+    to_crate = (CRATE_IN + Vector((0, 0, 0.3)) - shoulder).normalized()
+    d = to_ball.lerp(to_crate, smooth((t - 9.6) / 0.4)).normalized()
+    point = shoulder + d * 0.56 + Vector((0, 0, 0.06 + 0.015 * math.sin(t * 10)))
+    p.arm_to("L", rest.lerp(point, k), p.C(-1, -0.5, -0.6), p.C(-0.2, 0.2, -1).lerp(d, k))
     p.fingers("L", lerp(0.3, 0.1, k))
     p.rot_local("Bip01 Head", (0, 0, 1), 0.2 * k)
 
@@ -665,8 +698,8 @@ def animate():
         if t < CUT:
             ball.location = (0, 0, -1)
         else:
-            ball.location, sq = ball_state(t)
-            ball.scale = (1 / math.sqrt(sq), 1 / math.sqrt(sq), sq)
+            ball.location, sq, size = ball_state(t)
+            ball.scale = (size / math.sqrt(sq), size / math.sqrt(sq), size * sq)
             ball.rotation_euler = (-min(t, LAND_T) * 14, 0.3, 0.2)
         for prop in ("location", "scale", "rotation_euler"):
             ball.keyframe_insert(prop, frame=f)
@@ -709,7 +742,7 @@ def camera_at(t):
         cam_data.dof.focus_distance = (blue.pos - pos).length - 0.3
     else:
         k = (t - CUT) / (DURATION - CUT)
-        pos = Vector((lerp(0.0, 0.05, k), lerp(-4.0, -3.8, k), lerp(1.35, 1.32, k)))
+        pos = Vector((lerp(0.0, 0.05, k), lerp(-4.0, -3.55, k), lerp(1.35, 1.3, k)))
         look(pos, (-0.05, 1.0, 1.02), 62)
         cam_data.dof.focus_distance = (blue.pos - pos).length
 
